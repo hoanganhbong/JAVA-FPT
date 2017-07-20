@@ -1,0 +1,141 @@
+create View V_KhachHang
+AS
+select dh.* from DONHANG dh, KHACHHANG kh
+where dh.MaKH = kh.MaKH and kh.DiaChi = 'Da Nang' and
+dh.NgayDat< '2015/06/15'
+go
+select * from V_KhachHang
+go
+update V_KhachHang 
+set NgayDat='06/15/2015'
+where NgayDat = '06/15/2014'
+go
+create proc Sp_1(
+ @MaSP nvarchar(10)
+)AS
+BEGIN
+	DELETE FROM CHITIETDONHANG WHERE MaSP=@MaSP
+	DELETE FROM SANPHAM WHERE MaSP = @MaSP
+END
+go
+create PROCEDURE Sp_2 (
+	@MaDH nvarchar(10),
+	@MaSP nvarchar(10),
+	@SoLuong int
+)
+AS
+BEGIN 
+	if(not exists (Select * from CHITIETDONHANG where MaDH = @MaDH and MaSP = @MaSP))
+	begin
+		if(exists(select * from DONHANG where MaDH = @MaDH) and exists(select * from SANPHAM where MaSP = @MaSP))
+		begin
+			declare @dongia money
+			select @dongia = GiaTien from SANPHAM where MaSP = @MaSP
+
+			INSERT into CHITIETDONHANG(MaDH,MaSP,SoLuong,TongTien)
+			values (@MaDH,@MaSP,@SoLuong,@SoLuong*@dongia)
+		end
+		else print 'k co don hang hoac sp'
+	end
+	else print 'Trung khoa'
+END
+go
+exec Sp_2 'DH001','SP003',10
+go
+create trigger Trigger_1
+ON CHITIETDONHANG 
+After insert 
+AS
+BEGIN
+	declare @soLuong int,  @maSP nvarchar(10)
+	select @soLuong = SoLuong, @maSP = MaSP from inserted
+	update SANPHAM
+	set SoLuong = SoLuong - @soLuong
+	where MaSP=@maSP
+END
+go
+alter trigger Trigger_2
+ON CHITIETDONHANG
+After UPDATE
+AS
+BEGIN
+	declare @soLuong int
+	select @soLuong = SoLuong from inserted
+	if @soLuong<1 or @soLuong>100
+	begin
+		print 'So luong san pham dat hang phai nam trong khoang 1-100'
+		rollback transaction
+	end
+END
+update CHITIETDONHANG SET SoLuong = 1000 WHERE MaSP='SP001'
+
+go
+create function PhanTramGiamGia2017
+(@MaKH nvarchar(10))
+returns @tableResult table (MaKH nvarchar(10), MaDH nvarchar(10), TongTien money, PhanTram float)
+AS
+BEGIN
+	insert into @tableResult
+	select @MaKH, dh.MaDH, sum(ct.TongTien),null as TongTien from DONHANG dh, KHACHHANG kh, CHITIETDONHANG ct
+	where dh.MaKH = kh.MaKH and dh.MaDH = ct.MaDH and kh.MaKH = @MaKH and YEAR(dh.NgayDat)=2014
+	group by dh.MaDH
+
+	declare @tongTienCuaKH money
+	select @tongTienCuaKH = sum(TongTien) from @tableResult 
+	IF(@tongTienCuaKH < 10000000)
+		UPDATE @tableResult SET PhanTram = 0.2
+	ELSE IF(@tongTienCuaKH>2000000)
+		UPDATE @tableResult SET PhanTram = 0.3
+	return
+END
+
+select * from [dbo].[PhanTramGiamGia2017]('KH001')
+go
+
+ALTER proc Sp_SanPham
+AS
+BEGIN
+	declare controsp cursor
+	for select MaSP from CHITIETDONHANG
+		group by MaSP having COUNT(MaDH)>=2
+	open controsp
+	declare @maSP nvarchar(10)
+	FETCH NEXT FROM controsp
+	into @maSP
+	WHILE @@FETCH_STATUS=0
+	BEGIN
+		BEGIN TRANSACTION xoaSP;
+		print '-----------------------'
+		print 'Xoa SP co maSP = ' + @maSP
+		declare @tableDH table(MaDH nvarchar(10))
+		insert into @tableDH
+		select MaDH from CHITIETDONHANG
+		where @maSP = MaSP and MaDH in( 
+			select MaDH from CHITIETDONHANG
+			group by MaDH
+			having count(MaSP)=1)
+		DELETE FROM CHITIETDONHANG WHERE MaSP = @maSP
+		IF @@ERROR!=0
+			ROLLBACK TRANSACTION xoaSP;
+		ELSE print 'Xoa Cac CHI TIET THANH CONG '
+		DELETE FROM DONHANG WHERE MaDH in (select 
+		* from @tableDH)
+		IF @@ERROR != 0
+			ROLLBACK TRANSACTION xoaSP;
+		ELSE print 'Xoa Cac DON HANG THANH CONG '
+		DELETE FROM SANPHAM WHERE MaSP = @maSP
+		IF @@ERROR !=0
+			ROLLBACK TRANSACTION xoaSP;
+		ELSE 
+		BEGIN 
+			COMMIT TRANSACTION xoaSP;
+			print 'Xoa SP thanh cong'
+		END
+		FETCH NEXT FROM controsp
+		into @maSP
+	END
+	close controsp
+	deallocate controsp
+END
+go
+EXEC Sp_SanPham
